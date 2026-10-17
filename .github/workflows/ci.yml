@@ -75,18 +75,36 @@ jobs:
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
 
+      -
       - name: Update image tags in k8s manifests
+        shell: bash
+        env:
+          AWS_ACCOUNT_ID: ${{ secrets.AWS_ACCOUNT_ID }}
+          AWS_REGION: ${{ secrets.AWS_REGION }}
+          NEW_TAG: ${{ github.sha }}
         run: |
-          NEW_TAG=${{ github.sha }}
-          ACCOUNT=${{ secrets.AWS_ACCOUNT_ID }}
-          REGION=${{ secrets.AWS_REGION }}
+          set -euo pipefail
+
+          REGISTRY="${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com"
 
           for SERVICE in auth gateway orders order-service product-service user-service; do
             MANIFEST="gitops/k8s/backend/${SERVICE}.yml"
-            sed -i "s|${ACCOUNT}.dkr.ecr.${REGION}.amazonaws.com/${SERVICE}:.*|${ACCOUNT}.dkr.ecr.${REGION}.amazonaws.com/${SERVICE}:${NEW_TAG}|g" $MANIFEST
+            test -f "$MANIFEST" || { echo "Missing: $MANIFEST"; exit 1; }
+
+            sed -i -E \
+              "s|(^[[:space:]]*image:[[:space:]]*).*/${SERVICE}:[^[:space:]]+|\\1${REGISTRY}/${SERVICE}:${NEW_TAG}|" \
+              "$MANIFEST"
           done
 
-          sed -i "s|${ACCOUNT}.dkr.ecr.${REGION}.amazonaws.com/frontend:.*|${ACCOUNT}.dkr.ecr.${REGION}.amazonaws.com/frontend:${NEW_TAG}|g" gitops/k8s/frontend/deployment.yml
+          MANIFEST="gitops/k8s/frontend/deployment.yml"
+          test -f "$MANIFEST" || { echo "Missing: $MANIFEST"; exit 1; }
+
+          sed -i -E \
+            "s|(^[[:space:]]*image:[[:space:]]*).*/frontend:[^[:space:]]+|\\1${REGISTRY}/frontend:${NEW_TAG}|" \
+            "$MANIFEST"
+
+          echo "Resulting image references:"
+          grep -n 'image:' gitops/k8s/backend/*.yml gitops/k8s/frontend/deployment.yml
 
       - name: Commit and push updated manifests
         run: |
