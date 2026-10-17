@@ -47,21 +47,44 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+
           [[ "$AWS_ACCOUNT_ID" =~ ^[0-9]{12}$ ]] || {
             echo "AWS_ACCOUNT_ID must be a 12-digit AWS account ID."
             exit 1
           }
+
           test -n "$AWS_REGION" || {
             echo "AWS_REGION is missing."
             exit 1
           }
+
           aws sts get-caller-identity
+
+      - name: Create ECR repository if missing
+        shell: bash
+        env:
+          SERVICE: ${{ matrix.service }}
+        run: |
+          set -euo pipefail
+
+          if aws ecr describe-repositories \
+            --repository-names "$SERVICE" \
+            --region "$AWS_REGION" >/dev/null 2>&1; then
+            echo "ECR repository already exists: $SERVICE"
+          else
+            echo "Creating ECR repository: $SERVICE"
+            aws ecr create-repository \
+              --repository-name "$SERVICE" \
+              --region "$AWS_REGION"
+          fi
 
       - name: Login to Amazon ECR
         shell: bash
         run: |
           set -euo pipefail
+
           REGISTRY="${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com"
+
           aws ecr get-login-password --region "$AWS_REGION" |
             docker login --username AWS --password-stdin "$REGISTRY"
 
@@ -99,7 +122,9 @@ jobs:
           SERVICE: ${{ matrix.service }}
         run: |
           set -euo pipefail
+
           IMAGE_URI="${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/${SERVICE}:${IMAGE_TAG}"
+
           docker push "$IMAGE_URI"
 
   update-manifests:
@@ -112,6 +137,9 @@ jobs:
     steps:
       - name: Checkout Code
         uses: actions/checkout@v4
+        with:
+          ref: main
+          token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Update image tags in manifests
         shell: bash
@@ -140,7 +168,7 @@ jobs:
               "s|(^[[:space:]]*image:[[:space:]]*).*/${service}:[^[:space:]]+|\\1${REGISTRY}/${service}:${NEW_TAG}|" \
               "$manifest"
 
-            if grep -Eq 'AWS_ACCOUNT_ID|<AWS_ACCOUNT_ID>' "$manifest"; then
+            if grep -Eq '<AWS_ACCOUNT_ID>|AWS_ACCOUNT_ID' "$manifest"; then
               echo "Unresolved AWS account placeholder in ${manifest}"
               exit 1
             fi
@@ -171,4 +199,4 @@ jobs:
           fi
 
           git commit -m "ci: update image tags to ${GITHUB_SHA}"
-          git push
+          git push origin HEAD:main
